@@ -847,11 +847,14 @@ static void argmax_argmin_out_mps(const Tensor& input_t,
 // Unified host-side dispatch for value-preserving reductions on MPS, shared
 // by sum/nansum/mean/count_nonzero and min/max/all/any. Kernel name pattern
 // is always `{prefix}reduction_{variant}_{TI}_{TO}` with variant in
-// `""/"outer"/"inner"`. Selects among four code paths:
-//   1. Outer-dim kernel (dim=0 on contiguous input).
-//   2. Inner-dim kernel (last dim on contiguous input).
-//   3. Two-pass full reduction (scalar output, large input).
-//   4. Generic single-pass fallback.
+// `""/"outer"/"inner"/"small"/"inner_small"`. Selects among six code paths:
+//   1. Thread-per-output-element kernels for small reduced extents
+//      (sum-family only; see has_small_variants).
+//   2. Two-pass split for tiny outputs with huge reduced extents.
+//   3. Outer-dim kernel (dim=0 on contiguous input).
+//   4. Inner-dim kernel (last dim on contiguous input).
+//   5. Two-pass full reduction (scalar output, large input).
+//   6. Generic single-pass fallback.
 struct ReductionDispatch {
   std::string prefix; // "sum_", "nansum_", "count_nonzero_", "min_", "max_",
                       // "all_", "any_".
@@ -866,10 +869,49 @@ struct ReductionDispatch {
                             // -> "min_"/"max_" (predicate ran in pass 1).
   bool has_strided_pass1 = false; // sum has a `_strided_` pass-1 kernel; ops
                                   // without it call .contiguous() first.
+  bool has_small_variants = false; // sum-family registers thread-per-output
+                                   // `_small` kernels for small reduced
+                                   // extents; min/max/all/any do not.
   std::optional<float> divisor; // sum/mean only; appended as a float buffer
                                 // to the outer/inner kernel signatures, and
                                 // passed via NormParams.p elsewhere.
 };
+
+// Collapse adjacent dims that are both kept or both reduced (and drop
+// size-1 dims): shortens the per-thread div/mod chains in the kernels and
+// lets interleaved multi-dim reductions (e.g. expand backward, sum over
+// dims (3,5) of a contiguous 6D tensor) reach the affine one- or
+// two-reduced-dims walk instead of per-element get_input_offset. Merging
+// preserves the element enumeration order, so results are bitwise identical
+// to the uncollapsed dispatch. Entries are {input_size, input_stride,
+// output_size, output_stride}.
+using CollapsedDims = c10::SmallVector<std::array<uint32_t, 4>, c10::metal::max_ndim>;
+
+static CollapsedDims collapse_reduction_dims(const Tensor& input, const Tensor& output) {
+  CollapsedDims dims;
+  bool last_reduced = false;
+  for (const auto d : c10::irange(input.dim())) {
+    const auto in_size = static_cast<uint32_t>(input.size(d));
+    const auto in_stride = static_cast<uint32_t>(input.stride(d));
+    const auto out_size = static_cast<uint32_t>(output.size(d));
+    const auto out_stride = static_cast<uint32_t>(output.stride(d));
+    if (in_size == 1) {
+      continue;
+    }
+    const bool reduced = in_size != out_size;
+    if (!dims.empty() && last_reduced == reduced && dims.back()[1] == in_size * in_stride &&
+        (reduced || dims.back()[3] == out_size * out_stride)) {
+      dims.back()[0] *= in_size;
+      dims.back()[1] = in_stride;
+      dims.back()[2] *= out_size;
+      dims.back()[3] = out_stride;
+    } else {
+      dims.push_back({in_size, in_stride, out_size, out_stride});
+      last_reduced = reduced;
+    }
+  }
+  return dims;
+}
 
 static void reduction_dispatch_mps(TensorIterator& iter, const ReductionDispatch& opts) {
   Tensor output = iter.output(0);
@@ -894,6 +936,233 @@ static void reduction_dispatch_mps(TensorIterator& iter, const ReductionDispatch
   const auto in_str = scalarToMetalTypeString(opts.input_kernel_dtype);
   const auto out_str = scalarToMetalTypeString(opts.output_kernel_dtype);
   const auto partial_str = scalarToMetalTypeString(opts.partial_dtype);
+
+  // Thread-per-output-element kernels, two regimes:
+  //   - Small reduced extents (any layout): the per-output-element threadgroup
+  //     kernels below leave most of their lanes idle when reduction_size is
+  //     under one simdgroup block, so their cost scales with output numel
+  //     instead of with useful work (e.g. reducing an extent-2 dim pays a full
+  //     32-lane simd shuffle per pair of elements).
+  //   - Middle-dim reductions of a contiguous tensor (the innermost dim is
+  //     kept), at any extent: adjacent threads read adjacent addresses, so
+  //     serial per-thread accumulation is fully coalesced and beats the
+  //     generic kernel given enough outputs to occupy the GPU.
+  // The contiguous innermost-dim case gets direct row indexing; everything
+  // else (middle-dim, multi-dim, strided) the NormParams-based variant.
+  if (opts.has_small_variants && output.numel() > 1) {
+    const uint32_t num_outputs = output.numel();
+    const uint32_t tg_size = std::min(256u, num_outputs);
+    int num_reduced = 0;
+    int reduced_dim = -1;
+    for (int64_t d = 0; d < input_orig.dim(); d++) {
+      if (input_orig.size(d) != output.size(d)) {
+        num_reduced++;
+        reduced_dim = d;
+      }
+    }
+    const int64_t last_dim = input_orig.dim() - 1;
+    const bool contig = input_orig.is_contiguous() && output.is_contiguous();
+    const bool inner_contig = num_reduced == 1 && reduced_dim == last_dim && contig;
+    // Middle dim only: reduced_dim == 0 keeps the dedicated outer kernel
+    // (which splits the reduced dim across 32 row-workers per column), and
+    // reductions touching the innermost dim are not coalesced here.
+    const bool middle_contig = num_reduced == 1 && reduced_dim > 0 && reduced_dim < last_dim && contig &&
+        static_cast<uint32_t>(input_orig.size(last_dim)) >= c10::metal::simdgroup_size;
+    const bool use_small = reduction_size < SUM_SMALL_REDUCTION_THRESHOLD ||
+        (middle_contig && num_outputs >= SUM_THREAD_PER_OUTPUT_MIN_OUTPUTS);
+    if (use_small && inner_contig) {
+      auto kernel_name = fmt::format("{}reduction_inner_small_{}_{}", opts.prefix, in_str, out_str);
+      dispatch_sync_with_rethrow(stream->queue(), ^() {
+        @autoreleasepool {
+          id<MTLComputeCommandEncoder> ce = stream->commandEncoder();
+          auto ps = lib.getPipelineStateForFunc(kernel_name);
+          getMPSProfiler().beginProfileKernel(ps, opts.prefix + "reduction_inner_small", {input_orig});
+          [ce setComputePipelineState:ps];
+          mtl_setArgs(ce,
+                      input_orig,
+                      output,
+                      std::array<uint32_t, 2>{num_outputs, reduction_size},
+                      opts.divisor.value_or(0.0f));
+          [ce dispatchThreads:MTLSizeMake(num_outputs, 1, 1) threadsPerThreadgroup:MTLSizeMake(tg_size, 1, 1)];
+          getMPSProfiler().endProfileKernel(ps);
+        }
+      });
+      return;
+    }
+    if (use_small) {
+      auto kernel_name = fmt::format("{}reduction_small_{}_{}", opts.prefix, in_str, out_str);
+      auto dims = collapse_reduction_dims(input_orig, output);
+      NormParams params{};
+      params.ndim = dims.size();
+      params.p = opts.divisor.value_or(0.0f);
+      params.reduction_size = reduction_size;
+      for (const auto d : c10::irange(dims.size())) {
+        params.input_sizes[d] = dims[d][0];
+        params.input_strides[d] = dims[d][1];
+        params.output_sizes[d] = dims[d][2];
+        params.output_strides[d] = dims[d][3];
+      }
+      dispatch_sync_with_rethrow(stream->queue(), ^() {
+        @autoreleasepool {
+          id<MTLComputeCommandEncoder> ce = stream->commandEncoder();
+          auto ps = lib.getPipelineStateForFunc(kernel_name);
+          getMPSProfiler().beginProfileKernel(ps, opts.prefix + "reduction_small", {input_orig});
+          [ce setComputePipelineState:ps];
+          mtl_setArgs(ce, input_orig, output, params);
+          [ce dispatchThreads:MTLSizeMake(num_outputs, 1, 1) threadsPerThreadgroup:MTLSizeMake(tg_size, 1, 1)];
+          getMPSProfiler().endProfileKernel(ps);
+        }
+      });
+      return;
+    }
+  }
+
+  // Tiny output with a huge reduced extent (e.g. per-channel parameter
+  // gradients: 33M elements -> 32 channels): one threadgroup (or simdgroup)
+  // per output leaves the GPU idle. Split the largest reduced dim into
+  // num_chunks pieces, turning the chunk index into a kept dim, so pass 1
+  // reduces output.numel() * num_chunks partials with plenty of threadgroup
+  // parallelism; pass 2 collapses each output's partials and applies the
+  // mean divisor there, once. Works on raw strides, so no contiguity is
+  // required, and nansum's NaN handling happens in pass 1 (partials are
+  // NaN-free, pass 2 is a plain sum).
+  if (output.numel() > 1 && output.numel() < SUM_SPLIT_MAX_OUTPUTS && reduction_size > MAX_THREADGROUP_SIZE * NCHAINS) {
+    const uint32_t num_outputs = output.numel();
+    auto dims = collapse_reduction_dims(input_orig, output);
+    int32_t split = -1;
+    uint32_t others = 1; // product of the non-split reduced dims
+    for (const auto i : c10::irange(static_cast<int32_t>(dims.size()))) {
+      if (dims[i][0] != dims[i][2] && (split < 0 || dims[i][0] > dims[split][0])) {
+        split = i;
+      }
+    }
+    for (const auto i : c10::irange(static_cast<int32_t>(dims.size()))) {
+      if (i != split && dims[i][0] != dims[i][2]) {
+        others *= dims[i][0];
+      }
+    }
+    // Defer the non-split reduced dims to pass 2 when they are small: pass 1
+    // then reduces a single strided chunk per partial (no per-element
+    // div/mod in the kernel) and pass 2 stays trivially parallel.
+    const bool defer_others = others > 1 && others <= SUM_SPLIT_TARGET_TGS;
+    const uint32_t p1_groups = num_outputs * (defer_others ? others : 1);
+    uint32_t num_chunks = 0;
+    if (split >= 0 && dims.size() + 1 <= c10::metal::max_ndim) {
+      const uint32_t split_size = dims[split][0];
+      num_chunks = std::min({c10::metal::ceil_div(SUM_SPLIT_TARGET_TGS, p1_groups),
+                             std::max(1u, split_size / MAX_THREADGROUP_SIZE),
+                             split_size});
+      while (num_chunks > 1 && split_size % num_chunks != 0) {
+        num_chunks--;
+      }
+    }
+    if (num_chunks > 1 || (num_chunks == 1 && defer_others)) {
+      const uint32_t split_size = dims[split][0];
+      const uint32_t split_stride = dims[split][1];
+      const uint32_t chunk_size = split_size / num_chunks;
+      const uint32_t num_partials = p1_groups * num_chunks;
+      auto partials = at::empty({static_cast<int64_t>(num_partials)}, output.options().dtype(opts.partial_dtype));
+
+      // Pass 1: reduce only a chunk of the split dim per partial; the chunk
+      // index and any deferred reduced dims become kept dims. Partials are
+      // laid out contiguously over the pass-1 kept dims (chunk index
+      // innermost of the split pair).
+      NormParams params1{};
+      params1.ndim = dims.size() + 1;
+      params1.reduction_size = chunk_size * (defer_others ? 1 : others);
+      uint32_t pstride = 1;
+      int32_t p1 = static_cast<int32_t>(dims.size());
+      for (int32_t i = static_cast<int32_t>(dims.size()) - 1; i >= 0; i--) {
+        const bool reduced = dims[i][0] != dims[i][2];
+        if (i == split) {
+          params1.input_sizes[p1] = chunk_size;
+          params1.input_strides[p1] = split_stride;
+          params1.output_sizes[p1] = 1;
+          params1.output_strides[p1] = 0;
+          p1--;
+          params1.input_sizes[p1] = num_chunks;
+          params1.input_strides[p1] = split_stride * chunk_size;
+          params1.output_sizes[p1] = num_chunks;
+          params1.output_strides[p1] = pstride;
+          pstride *= num_chunks;
+        } else if (reduced && !defer_others) {
+          params1.input_sizes[p1] = dims[i][0];
+          params1.input_strides[p1] = dims[i][1];
+          params1.output_sizes[p1] = 1;
+          params1.output_strides[p1] = 0;
+        } else {
+          // kept dim, or deferred reduced dim (kept in pass 1)
+          params1.input_sizes[p1] = dims[i][0];
+          params1.input_strides[p1] = dims[i][1];
+          params1.output_sizes[p1] = dims[i][0];
+          params1.output_strides[p1] = pstride;
+          pstride *= dims[i][0];
+        }
+        p1--;
+      }
+
+      // Pass 2: collapse each output's num_chunks (and deferred-dim)
+      // partials. Dims fully reduced in pass 1 become size-1 slots; kept
+      // dims map the partials strides to the real output strides.
+      NormParams params2{};
+      params2.ndim = dims.size();
+      params2.p = opts.divisor.value_or(0.0f);
+      params2.reduction_size = num_chunks * (defer_others ? others : 1);
+      pstride = 1;
+      for (int32_t i = static_cast<int32_t>(dims.size()) - 1; i >= 0; i--) {
+        const bool reduced = dims[i][0] != dims[i][2];
+        if (i == split) {
+          params2.input_sizes[i] = num_chunks;
+          params2.input_strides[i] = pstride;
+          params2.output_sizes[i] = 1;
+          params2.output_strides[i] = 0;
+          pstride *= num_chunks;
+        } else if (reduced && defer_others) {
+          params2.input_sizes[i] = dims[i][0];
+          params2.input_strides[i] = pstride;
+          params2.output_sizes[i] = 1;
+          params2.output_strides[i] = 0;
+          pstride *= dims[i][0];
+        } else if (reduced) {
+          params2.input_sizes[i] = 1;
+          params2.input_strides[i] = 0;
+          params2.output_sizes[i] = 1;
+          params2.output_strides[i] = 0;
+        } else {
+          params2.input_sizes[i] = dims[i][0];
+          params2.input_strides[i] = pstride;
+          params2.output_sizes[i] = dims[i][2];
+          params2.output_strides[i] = dims[i][3];
+          pstride *= dims[i][0];
+        }
+      }
+
+      auto p1_kernel = fmt::format("{}reduction_{}_{}", opts.prefix, in_str, partial_str);
+      auto p2_kernel = fmt::format("{}reduction_{}_{}", opts.pass2_prefix, partial_str, out_str);
+      dispatch_sync_with_rethrow(stream->queue(), ^() {
+        @autoreleasepool {
+          id<MTLComputeCommandEncoder> ce = stream->commandEncoder();
+
+          auto ps1 = lib.getPipelineStateForFunc(p1_kernel);
+          getMPSProfiler().beginProfileKernel(ps1, opts.prefix + "reduction_split_pass1", {input_orig});
+          [ce setComputePipelineState:ps1];
+          mtl_setArgs(ce, input_orig, partials, params1);
+          const auto tpg1 = std::min(MAX_THREADGROUP_SIZE, c10::metal::round_up(params1.reduction_size, 32u));
+          [ce dispatchThreads:MTLSizeMake(num_partials * tpg1, 1, 1) threadsPerThreadgroup:MTLSizeMake(tpg1, 1, 1)];
+          getMPSProfiler().endProfileKernel(ps1);
+
+          auto ps2 = lib.getPipelineStateForFunc(p2_kernel);
+          getMPSProfiler().beginProfileKernel(ps2, opts.prefix + "reduction_split_pass2", {partials});
+          [ce setComputePipelineState:ps2];
+          mtl_setArgs(ce, partials, output, params2);
+          const auto tpg2 = std::min(MAX_THREADGROUP_SIZE, c10::metal::round_up(params2.reduction_size, 32u));
+          [ce dispatchThreads:MTLSizeMake(num_outputs * tpg2, 1, 1) threadsPerThreadgroup:MTLSizeMake(tpg2, 1, 1)];
+          getMPSProfiler().endProfileKernel(ps2);
+        }
+      });
+      return;
+    }
+  }
 
   // Outer-dim (dim=0 on contiguous input) and inner-dim (last dim on
   // contiguous input) specializations: handle the dim-reduction case with
@@ -1050,17 +1319,19 @@ static void reduction_dispatch_mps(TensorIterator& iter, const ReductionDispatch
     }
   }
 
-  // Generic single-pass fallback.
+  // Generic single-pass fallback. Collapsing shortens the in-kernel
+  // div/mod offset chains without changing the element enumeration order.
   auto kernel_name = fmt::format("{}reduction_{}_{}", opts.prefix, in_str, out_str);
+  auto dims = collapse_reduction_dims(input_orig, output);
   NormParams params{};
-  params.ndim = input_orig.dim();
+  params.ndim = dims.size();
   params.p = opts.divisor.value_or(0.0f);
   params.reduction_size = reduction_size;
-  for (const auto dim_idx : c10::irange(input_orig.dim())) {
-    params.input_sizes[dim_idx] = input_orig.size(dim_idx);
-    params.input_strides[dim_idx] = input_orig.stride(dim_idx);
-    params.output_sizes[dim_idx] = output.size(dim_idx);
-    params.output_strides[dim_idx] = output.stride(dim_idx);
+  for (const auto dim_idx : c10::irange(dims.size())) {
+    params.input_sizes[dim_idx] = dims[dim_idx][0];
+    params.input_strides[dim_idx] = dims[dim_idx][1];
+    params.output_sizes[dim_idx] = dims[dim_idx][2];
+    params.output_strides[dim_idx] = dims[dim_idx][3];
   }
   dispatch_sync_with_rethrow(stream->queue(), ^() {
     @autoreleasepool {
@@ -1105,6 +1376,7 @@ static void sum_nansum_kernel_mps(TensorIterator& iter, const std::string& kerne
                              .partial_dtype = output.scalar_type(),
                              .pass2_prefix = "sum_",
                              .has_strided_pass1 = true,
+                             .has_small_variants = true,
                              .divisor = divisor,
                          });
 }
