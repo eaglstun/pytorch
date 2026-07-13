@@ -1,3 +1,4 @@
+<!-- markdownlint-disable MD033 MD041 -->
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="https://github.com/pytorch/pytorch/raw/main/docs/source/_static/img/pytorch-logo-light.png" />
   <source media="(prefers-color-scheme: light)" srcset="https://github.com/pytorch/pytorch/raw/main/docs/source/_static/img/pytorch-logo-dark.png" />
@@ -6,7 +7,37 @@
 
 --------------------------------------------------------------------------------
 
+# eaglstun/pytorch — a fork
+
+This is [Eric Eaglstun's](https://github.com/eaglstun) fork of
+[pytorch/pytorch](https://github.com/pytorch/pytorch), used for developing fixes
+intended for upstream. It is not a distribution of PyTorch — build from source or
+use the official wheels.
+
+**Current work: MPS reduction-kernel performance.** torch 2.13's native Metal
+reduction kernels (`sum` / `nansum` / `mean`) regressed badly at both extremes of
+reduction geometry — tiny reduced extents (up to 36x slower; the backward of any
+`expand`/broadcast) and tiny outputs (7.5x slower; per-channel parameter
+gradients). This fork carries the fix: thread-per-output kernels for small
+extents and a generalized two-pass split for small outputs, with dispatch
+unchanged in the regimes where the 2.13 kernels win. Landed on this fork's
+`main` via [#1](https://github.com/eaglstun/pytorch/pull/1); the analysis lives
+in `MPS_SUM_REGRESSION_TODO.md` (local, untracked) and an upstream issue + PR
+are in progress.
+
+Fork conventions: `main` tracks upstream plus landed fixes (synced by merging
+`upstream/main`); development happens on feature branches PR'd against this
+fork's `main`; nothing is ever pushed to upstream directly. Contributor-facing
+build/test/lint conventions are in `CLAUDE.md` / `AGENTS.md` at the repo root.
+
+The original upstream README follows.
+
+<!-- markdownlint-disable -->
+
+--------------------------------------------------------------------------------
+
 PyTorch is a Python package that provides two high-level features:
+
 - Tensor computation (like NumPy) with strong GPU acceleration
 - Deep neural networks built on a tape-based autograd system
 
@@ -166,6 +197,7 @@ They require JetPack 4.2 and above, and [@dusty-nv](https://github.com/dusty-nv)
 
 #### Prerequisites
 If you are installing from source, you will need:
+
 - Python 3.10 or later
 - A compiler that fully supports C++20, such as clang or gcc (gcc 11.3.0 or newer is required, on Linux)
 - Visual Studio or Visual Studio Build Tool (Windows only)
@@ -186,6 +218,7 @@ $ source <CONDA_INSTALL_DIR>/bin/activate
 $ conda create -y -n <CONDA_NAME>
 $ conda activate <CONDA_NAME>
 ```
+
 * Windows:
 
 ```bash
@@ -202,6 +235,7 @@ packages (e.g., CUDA, MKL.)
 
 ##### NVIDIA CUDA Support
 If you want to compile with CUDA support, [select a supported version of CUDA from our support matrix](https://pytorch.org/get-started/locally/), then install the following:
+
 - [NVIDIA CUDA](https://developer.nvidia.com/cuda-downloads)
 - [NVIDIA cuDNN](https://developer.nvidia.com/cudnn) v9.0 or above
 - [Compiler](https://gist.github.com/ax3l/9489132) compatible with CUDA
@@ -217,6 +251,7 @@ If you are building for NVIDIA's Jetson platforms (Jetson Nano, TX1, TX2, AGX Xa
 
 ##### AMD ROCm Support
 If you want to compile with ROCm support, install
+
 - [AMD ROCm](https://rocm.docs.amd.com/en/latest/deploy/linux/quick_start.html) 4.0 and above installation
 - ROCm is currently supported only for Linux systems.
 
@@ -227,6 +262,7 @@ Other potentially useful environment variables may be found in `setup.py`.
 
 ##### Intel GPU Support
 If you want to compile with Intel GPU support, follow these
+
 - [PyTorch Prerequisites for Intel GPUs](https://www.intel.com/content/www/us/en/developer/articles/tool/pytorch-prerequisites-for-intel-gpu.html) instructions.
 - Intel GPU is supported for Linux and Windows.
 
@@ -557,6 +593,7 @@ on [our website](https://pytorch.org/get-started/previous-versions).
 ## Getting Started
 
 Pointers to get you started:
+
 - [Tutorials: get you started with understanding and using PyTorch](https://pytorch.org/tutorials/)
 - [Examples: easy to understand PyTorch code across all domains](https://github.com/pytorch/examples)
 - [The API Reference](https://pytorch.org/docs/)
@@ -576,6 +613,7 @@ Pointers to get you started:
 * [PyTorch YouTube](https://www.youtube.com/channel/UCWXI5YeOsh03QvJ59PMaXFw)
 
 ## Communication
+
 * Forums: Discuss implementations, research, etc. https://discuss.pytorch.org
 * GitHub Issues: Bug reports, feature requests, install issues, RFCs, thoughts, etc.
 * Slack: The [PyTorch Slack](https://pytorch.slack.com/) hosts a primary audience of moderate to experienced PyTorch users and developers for general chat, online discussions, collaboration, etc. If you are a beginner looking for help, the primary medium is [PyTorch Forums](https://discuss.pytorch.org). If you need a slack invite, please fill this form: https://goo.gl/forms/PP1AGvNHpSaJP8to1

@@ -1,19 +1,46 @@
-# Scratch Space
+# eaglstun/pytorch — agent instructions
+
+## This Fork
+
+This is `eaglstun/pytorch`, Eric's fork of upstream `pytorch/pytorch`, used for
+contributing fixes back to PyTorch (currently MPS/Metal reduction kernels).
+
+- **Remotes:** `origin` is the fork (`git@github.com:eaglstun/pytorch.git`).
+  `upstream` is `pytorch/pytorch`, fetch-only — its push URL is deliberately set
+  to `DISABLED`. Never push to upstream; PRs to upstream go via ghstack.
+- **Fork workflow:** feature branches are pushed to `origin` and PR'd against the
+  fork's own `main`. To pull in upstream changes after `main` has diverged:
+  `git fetch upstream main && git merge upstream/main && git push origin main`
+  (do NOT use `gh repo sync` once diverged — its `--force` discards fork commits).
+- **Environment:** `.venv` in the repo root. Activate it for all pip/python/pytest.
+- **Build config (this machine, M4 Max):**
+  `USE_CUDA=0 USE_DISTRIBUTED=0 USE_MKLDNN=0 BUILD_TEST=0 USE_FLASH_ATTENTION=0 pip install -e . -v --no-build-isolation`
+  (~1hr full, minutes incremental).
+- **GPU benchmarking:** before ANY timing run, `pgrep -f "fa[-]mps-venv"` must be
+  empty (a local flash-attention suite silently wrecks MPS timings; correctness is
+  immune). Watch for `mediaanalysisd` and VS Code `cpptools` CPU spikes. Always
+  include a `clone()` timing as a control. Reduction benches live in `agent_space/`
+  (`bench_sum_sweep.py`, `bench_output_sweep.py`, `bench_expand_backward.py`).
+- **Active work:** the MPS `sum`/`nansum`/`mean` reduction-geometry fix
+  (see `MPS_SUM_REGRESSION_TODO.md` at repo root, untracked) — landed on fork
+  `main` via PR eaglstun#1; upstream issue/PR pending.
+
+## Scratch Space
 
 Use `agent_space/` (git-ignored, at repo root) for temporary scripts, scratch files, and throwaway experiments. Do not commit files from this directory.
 
-# PR Review
+## PR Review
 
 When asked to review a PR, always use the /pr-review skill.
 
-# Environment
+## Environment
 
 If any tool you're trying to use (pip, python, spin, etc) is missing, check for
 a `.venv` directory in the project root or its parent directory. If found,
 activate it and retry. If no `.venv` is found, stop and ask the user if an
 environment is needed. Do NOT try to find alternatives or install these tools.
 
-# CI Docker Images
+## CI Docker Images
 
 The `.ci/docker/` directory is content-hashed to determine whether Docker images
 need rebuilding. Any file change inside `.ci/docker/` (including the README)
@@ -22,17 +49,18 @@ in this directory unless you intend to rebuild Docker images. When Docker builds
 are broken (e.g., due to an upstream Ubuntu outage), avoid touching this
 directory so you don't force a rebuild against the broken state.
 
-# Build
+## Build
 
-Always check local memory for build configuration (env vars, incremental-build shortcuts, etc.) before running the build, and apply what you find. If nothing applicable is in memory, ask the user.
+Use the fork's build config from the "This Fork" section above (also mirrored in
+local memory). If it doesn't apply (different machine, different goals), ask the user.
 All build (both codegen, C++ and python) is done via `pip install -e . -v --no-build-isolation`.
 You should NEVER run any other command to build PyTorch.
 
-# Testing
+## Testing
 
 Use our test class and test runner:
 
-```
+```python
 from torch.testing._internal.common_utils import run_tests, TestCase
 
 class TestFeature(TestCase):
@@ -46,12 +74,12 @@ To test Tensor equality, use assertEqual.
 For tests over multiple inputs, use the `@parametrize` decorator.
 For any test that checks numerics of the on-device implementation, use `instantiate_device_type_tests` to write device-generic tests.
 
-# Type Stubs
+## Type Stubs
 
 Many `.pyi` files are generated from corresponding `.pyi.in` templates. Always
 edit the `.pyi.in` file, not the generated `.pyi`.
 
-# Linting
+## Linting
 
 Only use commands provided via `spin` for linting.
 Use `spin help` to list available commands.
@@ -60,7 +88,7 @@ Generally, use `spin lint` as to run the lint and `spin fixlint` to apply automa
 When the user asks you to commit or amend, run `lintrunner -a` before creating
 the commit. Fix any lint errors it reports, then commit.
 
-# Git
+## Git
 
 This refines the Bash tool's `# Git` guidance to "branch first" when on the
 default branch:
@@ -70,7 +98,7 @@ default branch:
 - If you are on an actual branch (including `main`), follow the default
   guidance and branch first before committing.
 
-# Commit messages
+## Commit messages
 
 Don't commit unless the user explicitly asks you to.
 
@@ -99,7 +127,7 @@ If a commit message contains `ghstack-source-id` or `Pull-Request` trailers,
 you MUST preserve them when rewriting or splitting commit messages. ghstack
 will update the source id automatically when needed.
 
-# ghstack Workflow
+## ghstack Workflow
 
 ghstack commits follow a different workflow than the conventional GitHub branch
 and PR workflow. First identify whether you're on a ghstack commit:
@@ -137,7 +165,7 @@ Rules for working with ghstack:
   stay associated with their existing PRs; commits without trailers will get a
   fresh PR on submit. A full `ghstack` run is usually appropriate here.
 
-# Coding Style Guidelines
+## Coding Style Guidelines
 
 Follow these rules for all code changes in this repository:
 
@@ -168,12 +196,12 @@ Follow these rules for all code changes in this repository:
 
 If uncertain, choose the simpler, more concise implementation.
 
-# cuda.bindings Error Checking
+## cuda.bindings Error Checking
 
 Use `torch.cuda._utils._check_cuda_bindings` to error-check `cuda.bindings`
 runtime calls. Do not write inline error-checking helpers.
 
-# cuda.bindings Raw Handles
+## cuda.bindings Raw Handles
 
 `cuda.bindings` runtime functions accept a raw handle passed as a Python `int`
 directly as their handle argument. Whenever you already have an int handle --
@@ -186,7 +214,7 @@ hand an int you already have to a bindings call. For example
 `cudaGraphGetId(cudaGraph_t(init_value=g.raw_cuda_graph()))`. Only build the
 typed object when you genuinely need it as a value in its own right.
 
-# Dynamo Config
+## Dynamo Config
 
 Use `torch._dynamo.config.patch` for temporarily changing config. It can be used as a decorator on test methods or as a context manager:
 
@@ -211,17 +239,17 @@ finally:
     torch._dynamo.config.force_compile_during_fx_trace = orig
 ```
 
-# Fixing B950 line too long in multi-line string blocks
+## Fixing B950 line too long in multi-line string blocks
 
 If B950 line too long triggers on a multi-line string block, you cannot fix it by
 putting # noqa: B950 on that line directly, as that would change the meaning of the
 string, nor can you fix it by line breaking the string (since you need the string
-to stay the same).  Instead, put # noqa: B950 on the same line as the terminating
+to stay the same). Instead, put # noqa: B950 on the same line as the terminating
 triple quote.
 
 Example:
 
-```
+```python
     self.assertExpectedInline(
         foo(),
         """
@@ -230,7 +258,7 @@ this line is too long...
     )
 ```
 
-# Logging and Structured Tracing
+## Logging and Structured Tracing
 
 When adding debug logging for errors or diagnostic info, consider two user personas:
 
@@ -273,7 +301,7 @@ if trace_log.handlers:
   - Production: "Use tlparse to extract artifacts" (only if tracing enabled)
 - Use `_get_unique_path()` pattern to avoid overwriting existing debug files
 
-# cuda::ptx
+## cuda::ptx
 
 When using `<cuda/ptx>` typed wrappers for PTX instructions:
 
