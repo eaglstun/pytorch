@@ -306,18 +306,25 @@ kernel void sum_reduction(
     uint simdgroup_size [[threads_per_simdgroup]]) {
   using TA = ::metal::conditional_t<MODE == LOAD_NONZERO, uint, opmath_t<TO>>;
 
-  // Compute input_base (once per TG) and detect reduction pattern.
-  // For single reduced dim: input_base + k * reduction_stride gives
-  // the k-th reduction element — no per-element dim loop needed.
+  // Compute input_base (once per TG) and detect reduction pattern. For one
+  // or two reduced dims (recording (size, stride) of the innermost two),
+  // reduction elements are indexed affinely — no per-element dim loop.
   uint32_t input_base = 0;
-  uint32_t reduction_stride = 1;
   uint32_t num_reduced_dims = 0;
+  uint32_t r0_size = 1, r0_stride = 0;
+  uint32_t r1_size = 1, r1_stride = 0;
   {
     uint32_t out_idx = tgid;
     for (int32_t dim = params.ndim - 1; dim >= 0; dim--) {
       if (params.input_sizes[dim] != params.output_sizes[dim]) {
+        if (num_reduced_dims == 0) {
+          r0_size = params.input_sizes[dim];
+          r0_stride = params.input_strides[dim];
+        } else if (num_reduced_dims == 1) {
+          r1_size = params.input_sizes[dim];
+          r1_stride = params.input_strides[dim];
+        }
         num_reduced_dims++;
-        reduction_stride = params.input_strides[dim];
       } else {
         auto idx = out_idx % params.output_sizes[dim];
         out_idx /= params.output_sizes[dim];
@@ -338,16 +345,38 @@ kernel void sum_reduction(
   uint32_t base = tid * NCHAINS;
 
   if (num_reduced_dims <= 1) {
-    // Fast path: direct indexing with base + k * reduction_stride
+    // Fast path: direct indexing with base + k * r0_stride
     for (; base + NCHAINS <= rsize; base += stride) {
       for (uint j = 0; j < NCHAINS; j++) {
-        acc[j] +=
-            load_val<MODE>(input[input_base + (base + j) * reduction_stride]);
+        acc[j] += load_val<MODE>(input[input_base + (base + j) * r0_stride]);
       }
     }
     for (uint32_t idx = base; idx < rsize; idx++) {
+      acc[idx % NCHAINS] += load_val<MODE>(input[input_base + idx * r0_stride]);
+    }
+  } else if (num_reduced_dims == 2) {
+    // Two reduced dims (innermost r0, outer r1), same element order as
+    // get_input_offset: one div/mod per NCHAINS block plus a carry per
+    // element instead of the full per-element dim chain.
+    for (; base + NCHAINS <= rsize; base += stride) {
+      uint32_t a = base / r0_size;
+      uint32_t b = base - a * r0_size;
+      uint32_t off = input_base + a * r1_stride + b * r0_stride;
+      for (uint j = 0; j < NCHAINS; j++) {
+        acc[j] += load_val<MODE>(input[off]);
+        if (++b == r0_size) {
+          b = 0;
+          off += r1_stride - (r0_size - 1) * r0_stride;
+        } else {
+          off += r0_stride;
+        }
+      }
+    }
+    for (uint32_t idx = base; idx < rsize; idx++) {
+      const uint32_t a = idx / r0_size;
+      const uint32_t b = idx - a * r0_size;
       acc[idx % NCHAINS] +=
-          load_val<MODE>(input[input_base + idx * reduction_stride]);
+          load_val<MODE>(input[input_base + a * r1_stride + b * r0_stride]);
     }
   } else {
     // Generic path: per-element strided offset for multi-dim reductions
@@ -410,6 +439,106 @@ kernel void sum_reduction(
     }
     output[output_offset] = static_cast<TO>(output_val);
   }
+}
+
+// Thread-per-output-element variant for small reduction sizes. The
+// threadgroup-per-output kernels leave most lanes idle when the reduced
+// extent is below one simdgroup block and pay simd shuffles plus barriers
+// to combine a handful of elements, so their cost scales with output numel
+// rather than with useful work. Here each thread serially accumulates its
+// own output element with no cross-thread reduction at all. Handles any
+// dim/stride pattern via NormParams, same as sum_reduction.
+template <
+    typename TI,
+    typename TO,
+    uint NCHAINS = SUM_NCHAINS,
+    LoadMode MODE = LOAD_IDENTITY>
+kernel void sum_reduction_small(
+    constant TI* input [[buffer(0)]],
+    device TO* output [[buffer(1)]],
+    constant NormParams<>& params [[buffer(2)]],
+    uint tid [[thread_position_in_grid]]) {
+  using TA = ::metal::conditional_t<MODE == LOAD_NONZERO, uint, opmath_t<TO>>;
+
+  // Record (size, stride) of the innermost two reduced dims so one or two
+  // reduced dims can be walked with pure affine arithmetic below.
+  uint32_t input_base = 0;
+  uint32_t num_reduced_dims = 0;
+  uint32_t r0_size = 1, r0_stride = 0;
+  uint32_t r1_size = 1, r1_stride = 0;
+  {
+    uint32_t out_idx = tid;
+    for (int32_t dim = params.ndim - 1; dim >= 0; dim--) {
+      if (params.input_sizes[dim] != params.output_sizes[dim]) {
+        if (num_reduced_dims == 0) {
+          r0_size = params.input_sizes[dim];
+          r0_stride = params.input_strides[dim];
+        } else if (num_reduced_dims == 1) {
+          r1_size = params.input_sizes[dim];
+          r1_stride = params.input_strides[dim];
+        }
+        num_reduced_dims++;
+      } else {
+        auto idx = out_idx % params.output_sizes[dim];
+        out_idx /= params.output_sizes[dim];
+        input_base += idx * params.input_strides[dim];
+      }
+    }
+  }
+
+  metal::array<TA, NCHAINS> acc;
+  for (uint j = 0; j < NCHAINS; j++) {
+    acc[j] = 0;
+  }
+
+  const uint32_t rsize = params.reduction_size;
+  if (num_reduced_dims <= 1) {
+    uint32_t k = 0;
+    for (; k + NCHAINS <= rsize; k += NCHAINS) {
+      for (uint j = 0; j < NCHAINS; j++) {
+        acc[j] += load_val<MODE>(input[input_base + (k + j) * r0_stride]);
+      }
+    }
+    for (; k < rsize; k++) {
+      acc[k % NCHAINS] += load_val<MODE>(input[input_base + k * r0_stride]);
+    }
+  } else if (num_reduced_dims == 2) {
+    // Two reduced dims (rsize == r0_size * r1_size): nested affine walk in
+    // the same element order as get_input_offset, without its per-element
+    // div/mod chain. This is the expand/sum_to_size backward pattern.
+    uint32_t k = 0;
+    for (uint32_t a = 0; a < r1_size; a++) {
+      const uint32_t base_a = input_base + a * r1_stride;
+      for (uint32_t b = 0; b < r0_size; b++, k++) {
+        acc[k % NCHAINS] += load_val<MODE>(input[base_a + b * r0_stride]);
+      }
+    }
+  } else {
+    for (uint32_t k = 0; k < rsize; k++) {
+      acc[k % NCHAINS] +=
+          load_val<MODE>(input[get_input_offset(k, tid, params)]);
+    }
+  }
+
+  TA output_val = acc[0];
+  for (uint j = 1; j < NCHAINS; j++) {
+    output_val += acc[j];
+  }
+
+  uint32_t output_offset = 0;
+  uint32_t reduction_idx = tid;
+  for (int32_t dim = params.ndim - 1; dim >= 0; dim--) {
+    auto output_dim_size = params.output_sizes[dim];
+    if (output_dim_size > 1) {
+      auto index_in_dim = reduction_idx % output_dim_size;
+      reduction_idx /= output_dim_size;
+      output_offset += index_in_dim * params.output_strides[dim];
+    }
+  }
+  if (params.p > 0) {
+    output_val /= static_cast<TA>(params.p);
+  }
+  output[output_offset] = static_cast<TO>(output_val);
 }
 
 template <
@@ -616,6 +745,38 @@ kernel void sum_reduction_inner(
   }
 }
 
+// Thread-per-row variant of sum_reduction_inner for small N, where a whole
+// simdgroup per row would leave most lanes idle (the vectorized loop above
+// needs N >= 32 * NCHAINS to run at all) and pay a full simd shuffle to
+// combine a handful of elements. Each thread serially sums its own row.
+template <
+    typename TI,
+    typename TO,
+    LoadMode MODE = LOAD_IDENTITY,
+    FinalizeOp FINAL = FINAL_NONE>
+kernel void sum_reduction_inner_small(
+    constant TI* input [[buffer(0)]],
+    device TO* output [[buffer(1)]],
+    constant uint2& sizes [[buffer(2)]], // [M, N]
+    constant float& divisor [[buffer(3)]], // >0 divides accumulator before cast
+    uint tid [[thread_position_in_grid]]) {
+  using TA = ::metal::conditional_t<MODE == LOAD_NONZERO, uint, opmath_t<TO>>;
+  const uint M = sizes.x;
+  const uint N = sizes.y;
+  if (tid >= M)
+    return;
+
+  constant TI* row_ptr = input + tid * N;
+  TA sum = 0;
+  for (uint i = 0; i < N; i++) {
+    sum += load_val<MODE>(row_ptr[i]);
+  }
+  if (divisor > 0) {
+    sum /= static_cast<TA>(divisor);
+  }
+  output[tid] = static_cast<TO>(finalize_val<FINAL>(sum));
+}
+
 #define REGISTER_SUM_INNER_IMPL(TI, TO, PREFIX, MODE, FINAL)         \
   template [[host_name(PREFIX "reduction_inner_" #TI "_" #TO)]]      \
   kernel void sum_reduction_inner<TI, TO, SUM_NCHAINS, MODE, FINAL>( \
@@ -628,12 +789,26 @@ kernel void sum_reduction_inner(
       uint simd_lane_id [[thread_index_in_simdgroup]],               \
       uint simdgroup_id [[simdgroup_index_in_threadgroup]]);
 
-#define REGISTER_SUM_INNER(TI, TO) \
-  REGISTER_SUM_INNER_IMPL(TI, TO, "sum_", LOAD_IDENTITY, FINAL_NONE)
-#define REGISTER_NANSUM_INNER(TI, TO) \
-  REGISTER_SUM_INNER_IMPL(TI, TO, "nansum_", LOAD_NAN_TO_ZERO, FINAL_NONE)
-#define REGISTER_COUNT_NONZERO_INNER(TI) \
-  REGISTER_SUM_INNER_IMPL(TI, long, "count_nonzero_", LOAD_NONZERO, FINAL_NONE)
+#define REGISTER_SUM_INNER_SMALL_IMPL(TI, TO, PREFIX, MODE, FINAL)    \
+  template [[host_name(PREFIX "reduction_inner_small_" #TI "_" #TO)]] \
+  kernel void sum_reduction_inner_small<TI, TO, MODE, FINAL>(         \
+      constant TI * input [[buffer(0)]],                              \
+      device TO * output [[buffer(1)]],                               \
+      constant uint2 & sizes [[buffer(2)]],                           \
+      constant float& divisor [[buffer(3)]],                          \
+      uint tid [[thread_position_in_grid]]);
+
+#define REGISTER_SUM_INNER(TI, TO)                                   \
+  REGISTER_SUM_INNER_IMPL(TI, TO, "sum_", LOAD_IDENTITY, FINAL_NONE) \
+  REGISTER_SUM_INNER_SMALL_IMPL(TI, TO, "sum_", LOAD_IDENTITY, FINAL_NONE)
+#define REGISTER_NANSUM_INNER(TI, TO)                                      \
+  REGISTER_SUM_INNER_IMPL(TI, TO, "nansum_", LOAD_NAN_TO_ZERO, FINAL_NONE) \
+  REGISTER_SUM_INNER_SMALL_IMPL(TI, TO, "nansum_", LOAD_NAN_TO_ZERO, FINAL_NONE)
+#define REGISTER_COUNT_NONZERO_INNER(TI)                    \
+  REGISTER_SUM_INNER_IMPL(                                  \
+      TI, long, "count_nonzero_", LOAD_NONZERO, FINAL_NONE) \
+  REGISTER_SUM_INNER_SMALL_IMPL(                            \
+      TI, long, "count_nonzero_", LOAD_NONZERO, FINAL_NONE)
 #define REGISTER_NORM_INNER(TI, TO)                                 \
   REGISTER_SUM_INNER_IMPL(TI, TO, "norm_l1_", LOAD_ABS, FINAL_NONE) \
   REGISTER_SUM_INNER_IMPL(TI, TO, "norm_l2_", LOAD_SQUARE, FINAL_SQRT)
@@ -684,15 +859,26 @@ REGISTER_NORM_INNER(bfloat, bfloat);
       uint tptg [[threads_per_threadgroup]],                          \
       uint tgid [[threadgroup_position_in_grid]]);
 
-#define REGISTER_SUM(TI, TO)                       \
-  REGISTER_SUM_IMPL(TI, TO, "sum_", LOAD_IDENTITY) \
-  REGISTER_SUM_STRIDED_IMPL(TI, TO, "sum_", LOAD_IDENTITY)
-#define REGISTER_NANSUM(TI, TO)                          \
-  REGISTER_SUM_IMPL(TI, TO, "nansum_", LOAD_NAN_TO_ZERO) \
-  REGISTER_SUM_STRIDED_IMPL(TI, TO, "nansum_", LOAD_NAN_TO_ZERO)
-#define REGISTER_COUNT_NONZERO(TI)                            \
-  REGISTER_SUM_IMPL(TI, long, "count_nonzero_", LOAD_NONZERO) \
-  REGISTER_SUM_STRIDED_IMPL(TI, long, "count_nonzero_", LOAD_NONZERO)
+#define REGISTER_SUM_SMALL_IMPL(TI, TO, PREFIX, MODE)           \
+  template [[host_name(PREFIX "reduction_small_" #TI "_" #TO)]] \
+  kernel void sum_reduction_small<TI, TO, SUM_NCHAINS, MODE>(   \
+      constant TI * input [[buffer(0)]],                        \
+      device TO * output [[buffer(1)]],                         \
+      constant NormParams<> & params [[buffer(2)]],             \
+      uint tid [[thread_position_in_grid]]);
+
+#define REGISTER_SUM(TI, TO)                               \
+  REGISTER_SUM_IMPL(TI, TO, "sum_", LOAD_IDENTITY)         \
+  REGISTER_SUM_STRIDED_IMPL(TI, TO, "sum_", LOAD_IDENTITY) \
+  REGISTER_SUM_SMALL_IMPL(TI, TO, "sum_", LOAD_IDENTITY)
+#define REGISTER_NANSUM(TI, TO)                                  \
+  REGISTER_SUM_IMPL(TI, TO, "nansum_", LOAD_NAN_TO_ZERO)         \
+  REGISTER_SUM_STRIDED_IMPL(TI, TO, "nansum_", LOAD_NAN_TO_ZERO) \
+  REGISTER_SUM_SMALL_IMPL(TI, TO, "nansum_", LOAD_NAN_TO_ZERO)
+#define REGISTER_COUNT_NONZERO(TI)                                    \
+  REGISTER_SUM_IMPL(TI, long, "count_nonzero_", LOAD_NONZERO)         \
+  REGISTER_SUM_STRIDED_IMPL(TI, long, "count_nonzero_", LOAD_NONZERO) \
+  REGISTER_SUM_SMALL_IMPL(TI, long, "count_nonzero_", LOAD_NONZERO)
 
 REGISTER_SUM(float, float);
 REGISTER_SUM(float, half);
