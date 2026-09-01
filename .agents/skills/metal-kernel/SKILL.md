@@ -7,7 +7,18 @@ description: Write Metal/MPS kernels for PyTorch operators. Use when adding MPS 
 
 This skill guides you through implementing Metal kernels for PyTorch operators on Apple Silicon.
 
-**Important:** The goal of this skill is to use native Metal capabilities via the `c10/metal/` infrastructure, NOT MPSGraph. Native Metal kernels provide better control, performance, and maintainability.
+This skill owns native Metal work through the `c10/metal/` infrastructure. It does not imply that a
+custom kernel is always the right first implementation for a missing MPS operator. Before editing,
+read `~/.agents/skills/apple-silicon/references/pytorch-mps-backend-overview.md` and triage the path:
+
+1. Use an existing MPS/MPSGraph primitive when it implements the required PyTorch semantics.
+2. Use a custom Metal kernel for a performance-critical gap or when MPSGraph cannot implement the op
+   correctly.
+3. Use CPU fallback only as a last resort for a non-performance-critical gap.
+
+Once native Metal is selected, or when the task explicitly asks to migrate away from MPSGraph, follow
+the workflow below. Native Metal provides the control needed for coverage, numerics, and performance,
+but those benefits should be demonstrated for the operator at hand.
 
 ## Overview
 
