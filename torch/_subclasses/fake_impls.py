@@ -41,6 +41,7 @@ from torch._subclasses.fake_tensor import (
     DynamicOutputShapeException,
     FakeTensor,
     in_kernel_invocation_manager,
+    is_fake_tensor,
     run_fallback_kernel,
     UnsupportedOperatorException,
 )
@@ -384,7 +385,7 @@ def workaround_stride_incorrect_op(
     # This is a workaround for meta implementations with incorrect strides
 
     def is_symbolic(x: object) -> bool:
-        if isinstance(x, FakeTensor):
+        if is_fake_tensor(x):
             return x._has_symbolic_sizes_strides
         if isinstance(x, (torch.SymInt, torch.SymFloat, torch.SymBool)):
             return True
@@ -420,6 +421,67 @@ def resize_as_(
         return func(*args, **kwargs)
 
 
+_foreach_pointwise_tensor_to_scalar_list = {
+    aten._foreach_addcdiv.Tensor: aten._foreach_addcdiv.ScalarList,
+    aten._foreach_addcdiv_.Tensor: aten._foreach_addcdiv_.ScalarList,
+    aten._foreach_addcmul.Tensor: aten._foreach_addcmul.ScalarList,
+    aten._foreach_addcmul_.Tensor: aten._foreach_addcmul_.ScalarList,
+}
+_foreach_packed_scalar_dtypes = frozenset(
+    {
+        torch.bool,
+        torch.uint8,
+        torch.int8,
+        torch.int16,
+        torch.int32,
+        torch.int64,
+        torch.float16,
+        torch.bfloat16,
+        torch.float32,
+        torch.float64,
+        torch.complex32,
+        torch.bcomplex32,
+        torch.complex64,
+        torch.complex128,
+    }
+)
+
+
+@register_op_impl(tuple(_foreach_pointwise_tensor_to_scalar_list))
+def foreach_pointwise_tensor(
+    fake_mode: FakeTensorMode,
+    func: OpOverload,
+    inputs: list[torch.Tensor],
+    tensor1: list[torch.Tensor],
+    tensor2: list[torch.Tensor],
+    scalars: torch.Tensor,
+) -> list[FakeTensor] | None:
+    if scalars.device.type != "cpu":
+        raise RuntimeError(
+            f"Expected scalars to be on CPU, got {scalars.device} instead."
+        )
+    if not scalars.is_contiguous():
+        raise RuntimeError("Expected scalars to be contiguous.")
+    if scalars.dim() != 1:
+        raise RuntimeError(
+            f"Expected packed scalar Tensor to be of dimension 1. Got {scalars.dim()} instead."
+        )
+    if scalars.dtype not in _foreach_packed_scalar_dtypes:
+        raise NotImplementedError(
+            f"Packed scalar Tensor dtype {scalars.dtype} is not supported"
+        )
+    if scalars.size(0) != len(inputs):
+        raise RuntimeError(
+            f"Expected length of scalars to match input of length {len(inputs)} "
+            f"but got {scalars.size(0)} instead."
+        )
+
+    scalar = utils.dtype_to_type(scalars.dtype)(1)
+    return _foreach_pointwise_tensor_to_scalar_list[func](
+        inputs, tensor1, tensor2, [scalar] * len(inputs)
+    )
+
+
 @register_op_impl(aten._sparse_coo_tensor_with_dims_and_tensors.default)
 def _sparse_coo_tensor_with_dims_and_tensors(
     fake_mode: FakeTensorMode, func: OpOverload, *args: Any, **kwargs: Any
@@ -431,7 +493,7 @@ def _spdiags_static_offsets(offsets: FakeTensorLike) -> list[int] | None:
     constant = getattr(offsets, "constant", None)
     if constant is None:
         constant = getattr(offsets, "real_tensor", None)
-    if isinstance(constant, FakeTensor):
+    if is_fake_tensor(constant):
         return None
     if constant is None or constant.device.type != "cpu":
         return None
@@ -1646,7 +1708,12 @@ def maybe_to_dense_mkldnn(
     dtype: torch.dtype | None = None,
     masked_grad: bool | None = None,
 ) -> object:
-    if not isinstance(a, FakeTensor) or not a.is_mkldnn:
+    # this function invokes in_kernel_invocation_manager and creates python
+    # FakeTensor, revisit later for C++ behaviour
+    if (
+        not isinstance(a, FakeTensor)  # noqa: ISINSTANCE_FAKE_TENSOR
+        or not a.is_mkldnn
+    ):
         return NotImplemented
 
     out_dtype = dtype if dtype is not None else a.dtype
@@ -1802,7 +1869,7 @@ def to_dense_python_tls_impl(
 ) -> torch.Tensor:
     from torch._subclasses.functional_tensor import FunctionalTensor
 
-    if isinstance(self, (FakeTensor, FunctionalTensor)):
+    if isinstance(self, (FakeTensor, FunctionalTensor)):  # noqa: ISINSTANCE_FAKE_TENSOR
         return to_dense_composite_impl(self, dtype=dtype, masked_grad=masked_grad)
 
     with torch._C._ExcludeDispatchKeyGuard(_PYTHON_TLS_SNAPSHOT_KEYSET):
@@ -1830,7 +1897,7 @@ def to_mkldnn(
     a: FakeTensor,
     dtype: torch.dtype | None = None,
 ) -> object:
-    if not isinstance(a, FakeTensor):
+    if not isinstance(a, FakeTensor):  # noqa: ISINSTANCE_FAKE_TENSOR
         return NotImplemented
 
     out_dtype = dtype if dtype is not None else a.dtype
@@ -2073,7 +2140,7 @@ def conv(
     )
 
     def expect_fake_tensor(name: str, value: object) -> FakeTensor:
-        if not isinstance(value, FakeTensor):
+        if not isinstance(value, FakeTensor):  # noqa: ISINSTANCE_FAKE_TENSOR
             raise AssertionError(
                 "Expected fake convolution tensor arguments to be FakeTensors, "
                 f"but {name} was {type(value).__name__}"
@@ -2206,19 +2273,30 @@ def bincount(
         # Without symints/symfloats, cannot handle this
         raise DynamicOutputShapeException(func)
 
-    new_size = fake_mode.shape_env.create_unbacked_symint()
+    from torch.fx.experimental.symbolic_shapes import (
+        _constrain_range_for_size,
+        has_free_symbols,
+    )
 
-    from torch.fx.experimental.symbolic_shapes import _constrain_range_for_size
+    if not has_free_symbols(inputs.numel()) and inputs.numel() == 0:
+        return inputs.new_empty(minlength, dtype=torch.int64)  # type: ignore[return]
+
+    new_size = fake_mode.shape_env.create_unbacked_symint()
 
     _constrain_range_for_size(new_size)
     torch._check(new_size >= minlength)
-
     if weights is None:
-        return inputs.new_empty(new_size, dtype=torch.long)  # type: ignore[return]
-    elif weights.dtype == torch.float32:
-        return inputs.new_empty(new_size, dtype=torch.float32)  # type: ignore[return]
+        return inputs.new_empty(new_size, dtype=torch.int64)  # type: ignore[return]
+
+    if weights.device.type == "mps":
+        dtype = (
+            weights.dtype
+            if weights.dtype in (torch.float32, torch.int32, torch.float16)
+            else torch.int32
+        )
     else:
-        return inputs.new_empty(new_size, dtype=torch.float64)  # type: ignore[return]
+        dtype = weights.dtype if weights.dtype == torch.float32 else torch.float64
+    return weights.new_empty(new_size, dtype=dtype)  # type: ignore[return]
 
 
 @register_op_impl(torch.ops.aten._pack_padded_sequence.default)
@@ -2264,7 +2342,7 @@ def _fake_alias(fake_mode: FakeTensorMode, x: FakeTensor) -> FakeTensor:
 def fake_alias(
     fake_mode: FakeTensorMode, func: OpOverload, x: FakeTensor
 ) -> FakeTensor | object:
-    if not isinstance(x, FakeTensor):
+    if not isinstance(x, FakeTensor):  # noqa: ISINSTANCE_FAKE_TENSOR
         return NotImplemented
     return _fake_alias(fake_mode, x)
 
@@ -2474,8 +2552,17 @@ def make_fast_binary_impl(
 # disable the python dispatcher to avoid decomposing detach() further
 # (proxy_mode should still decompose detach() though)
 def fast_detach(
-    fake_mode: FakeTensorMode, x: FakeTensor, include_real: bool = False
-) -> FakeTensor:
+    fake_mode: FakeTensorMode | None,
+    x: FakeTensor | torch.Tensor,
+    include_real: bool = False,
+) -> torch.Tensor:
+    if (
+        not isinstance(x, FakeTensor)  # noqa: ISINSTANCE_FAKE_TENSOR
+        or fake_mode is None
+    ):
+        raise AssertionError(
+            "type widening added for cpp faketensor but this is not used yet"
+        )
     with no_python_dispatcher(), in_kernel_invocation_manager(fake_mode):
         out = torch.ops.aten.detach.default(x)
     dispatch_keys = x.dispatch_keys

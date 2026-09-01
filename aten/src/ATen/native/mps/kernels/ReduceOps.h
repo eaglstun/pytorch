@@ -3,25 +3,59 @@
 
 #define MAX_THREADGROUP_SIZE static_cast<uint32_t>(1024)
 C10_METAL_CONSTEXPR uint32_t SUM_NCHAINS = 8;
-// Reduced extents below this threshold dispatch the thread-per-output-element
-// `_small` kernels instead of the simdgroup/threadgroup-per-output ones,
-// whose vectorized loops need at least 32 * SUM_NCHAINS elements per output
-// to execute at all (below that, most lanes idle and the simd shuffle
-// dominates the cost of adding a handful of elements).
-C10_METAL_CONSTEXPR uint32_t SUM_SMALL_REDUCTION_THRESHOLD = 32 * SUM_NCHAINS;
-// For middle-dim reductions of a contiguous tensor (the innermost dim is
-// kept), adjacent threads of the thread-per-output kernel read adjacent
-// addresses, so it stays fully coalesced at any reduced extent and beats
-// the generic threadgroup-per-output kernel as long as there are enough
-// output elements to occupy the GPU. This is that occupancy floor.
-C10_METAL_CONSTEXPR uint32_t SUM_THREAD_PER_OUTPUT_MIN_OUTPUTS = 2048;
-// The opposite pathology: fewer outputs than this with a large reduced
-// extent cannot fill the GPU with one threadgroup per output (e.g.
-// per-channel parameter gradients reduce 33M elements to 32 outputs). Such
-// reductions are split across chunks with a partials buffer and second pass.
-C10_METAL_CONSTEXPR uint32_t SUM_SPLIT_MAX_OUTPUTS = 1024;
-// Rough total number of pass-1 threadgroups the split path aims for.
-C10_METAL_CONSTEXPR uint32_t SUM_SPLIT_TARGET_TGS = 4096;
+
+// Threadgroup size the host dispatches the inner / inner_chunk reduction
+// kernels with; both carve the threadgroup into whole simdgroups.
+C10_METAL_CONSTEXPR uint32_t INNER_TG_SIZE = 256;
+static_assert(
+    INNER_TG_SIZE % ::c10::metal::simdgroup_size == 0,
+    "must be a whole number of simdgroups");
+static_assert(
+    INNER_TG_SIZE <= MAX_THREADGROUP_SIZE,
+    "exceeds the Metal threadgroup size limit");
+
+// Inner-dim routing thresholds, see reduction_dispatch_mps in ReduceOps.mm.
+C10_METAL_CONSTEXPR uint32_t CHUNK_MAX_ROW_LEN = 256;
+C10_METAL_CONSTEXPR uint32_t CHUNK_ELEMS_PER_LANE = 16;
+C10_METAL_CONSTEXPR uint32_t CHUNK_MIN_NUMEL = 65536;
+C10_METAL_CONSTEXPR uint32_t SPLIT_MIN_ROW_LEN = 2048;
+C10_METAL_CONSTEXPR uint32_t SPLIT_MIN_SEG_LEN = 64;
+C10_METAL_CONSTEXPR uint32_t SPLIT_MAX_SEGS = 2048;
+C10_METAL_CONSTEXPR uint32_t SPLIT_TARGET_PARTIALS = 8192;
+C10_METAL_CONSTEXPR uint32_t SPLIT_MIN_TGS = 64;
+
+// Threadgroup shapes of the outer / outer_small_dim / narrow reduction
+// kernels; the host dispatch and the kernel registrations must agree on
+// these.
+C10_METAL_CONSTEXPR uint32_t OUTER_TG_WIDTH = 32;
+C10_METAL_CONSTEXPR uint32_t OUTER_TG_HEIGHT = 32;
+C10_METAL_CONSTEXPR uint32_t NARROW_TG_SIZE = 256;
+static_assert(
+    OUTER_TG_WIDTH == ::c10::metal::simdgroup_size,
+    "one threadgroup row per simdgroup keeps column loads coalesced");
+static_assert(
+    OUTER_TG_WIDTH * OUTER_TG_HEIGHT <= MAX_THREADGROUP_SIZE &&
+        NARROW_TG_SIZE <= MAX_THREADGROUP_SIZE,
+    "exceeds the Metal threadgroup size limit");
+
+// Outer-dim (non-innermost) routing thresholds, phrased in the
+// [outer_size, dim_size, inner_size] view of the input (dim reduced).
+C10_METAL_CONSTEXPR uint32_t OUTER_SMALL_DIM_MAX_SIZE = 256;
+C10_METAL_CONSTEXPR uint32_t NARROW_BATCHED_MIN_DIM_SIZE = 128;
+C10_METAL_CONSTEXPR uint32_t NARROW_SPLIT_ELEMS_PER_TG = 8192;
+C10_METAL_CONSTEXPR uint32_t OUTER_SPLIT_MIN_DIM_SIZE = 4096;
+C10_METAL_CONSTEXPR uint32_t OUTER_SPLIT_MIN_TGS = 32;
+C10_METAL_CONSTEXPR uint32_t OUTER_SPLIT_MIN_SEG_LEN = 512;
+C10_METAL_CONSTEXPR uint32_t OUTER_SPLIT_MAX_TGS = 2048;
+C10_METAL_CONSTEXPR uint32_t OUTER_SPLIT_STRIDED_TARGET_TGS = 256;
+
+// argmax/argmin inner split-K thresholds (argmax_argmin_out_mps in
+// ReduceOps.mm). The arg inner kernel keeps one compare chain per lane (no
+// NCHAINS ILP), so it saturates the GPU later than the value kernels and
+// splits at a higher threadgroup count.
+C10_METAL_CONSTEXPR uint32_t ARG_SPLIT_MIN_TGS = 512;
+C10_METAL_CONSTEXPR uint32_t ARG_SPLIT_MIN_SEG_LEN = 512;
+C10_METAL_CONSTEXPR uint32_t ARG_SPLIT_TARGET_PARTIALS = 16384;
 
 template <unsigned N = c10::metal::max_ndim>
 struct NormParams {

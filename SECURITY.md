@@ -1,15 +1,16 @@
 # Security Policy
 
- - [**Reporting a Vulnerability**](#reporting-a-vulnerability)
- - [**Issues That Are Not Security Vulnerabilities**](#issues-that-are-not-security-vulnerabilities)
- - [**Using PyTorch Securely**](#using-pytorch-securely)
-   - [Untrusted models](#untrusted-models)
-   - [TorchScript models](#torchscript-models)
-   - [Untrusted inputs](#untrusted-inputs)
-   - [Data privacy](#data-privacy)
-   - [Using distributed features](#using-distributed-features)
+- [**Reporting a Vulnerability**](#reporting-a-vulnerability)
+- [**Issues That Are Not Security Vulnerabilities**](#issues-that-are-not-security-vulnerabilities)
+- [**Using PyTorch Securely**](#using-pytorch-securely)
+  - [Untrusted models](#untrusted-models)
+  - [TorchScript models](#torchscript-models)
+  - [Untrusted inputs](#untrusted-inputs)
+  - [Data privacy](#data-privacy)
+  - [Using distributed features](#using-distributed-features)
 - [**Backporting Security Fixes**](#security-fixes-and-old-releases)
 - [**CI/CD security principles**](#cicd-security-principles)
+
 ## Reporting Security Issues
 
 Beware that none of the topics under [Using PyTorch Securely](#using-pytorch-securely) are considered vulnerabilities of PyTorch.
@@ -37,9 +38,11 @@ PyTorch is a framework that executes user-provided code, including model definit
 If your security advisory is closed because it falls into one of these categories, please don't be discouraged — these are still valuable reports. We encourage you to re-file them as a [regular issue](https://github.com/pytorch/pytorch/issues/new?template=bug-report.yml) so they can be tracked and fixed as bugs.
 
 ## Using PyTorch Securely
+
 **PyTorch models are programs**, so treat its security seriously -- running untrusted models is equivalent to running untrusted code. In general we recommend that model weights and the python code for the model are distributed independently. That said, be careful about where you get the python code from and who wrote it (preferentially check for a provenance or checksums, do not run any pip installed package).
 
 ### Untrusted models
+
 Be careful when running untrusted models. This classification includes models created by unknown developers or utilizing data obtained from unknown sources[^data-poisoning-sources].
 
 **Prefer to execute untrusted models within a secure, isolated environment such as a sandbox** (e.g., containers, virtual machines). This helps protect your system from potentially malicious code. You can find further details and instructions in [this page](https://developers.google.com/code-sandboxing).
@@ -50,7 +53,8 @@ Even for more secure serialization formats, unexpected inputs to the downstream 
 
 Important Note: The trustworthiness of a model is not binary. You must always determine the proper level of caution depending on the specific model and how it matches your use case and risk tolerance.
 
-[^data-poisoning-sources]: To understand risks of utilization of data from unknown sources, read the following Cornell papers on Data poisoning:
+[^data-poisoning-sources]:
+    To understand risks of utilization of data from unknown sources, read the following Cornell papers on Data poisoning:
     https://arxiv.org/abs/2312.04748
     https://arxiv.org/abs/2401.05566
 
@@ -65,16 +69,18 @@ PyTorch mobile models (`.ptl` files) are TorchScript models optimized for mobile
 If you plan to open your model to untrusted inputs, be aware that inputs can also be used as vectors by malicious agents. To minimize risks, make sure to give your model only the permissions strictly required, and keep your libraries updated with the latest security patches.
 
 If applicable, prepare your model against bad inputs and prompt injections. Some recommendations:
+
 - Pre-analysis: check how the model performs by default when exposed to prompt injection (e.g. using fuzzing for prompt injection).
 - Input Sanitation: Before feeding data to the model, sanitize inputs rigorously. This involves techniques such as:
-    - Validation: Enforce strict rules on allowed characters and data types.
-    - Filtering: Remove potentially malicious scripts or code fragments.
-    - Encoding: Convert special characters into safe representations.
-    - Verification: Run tooling that identifies potential script injections (e.g. [models that detect prompt injection attempts](https://python.langchain.com/docs/guides/safety/hugging_face_prompt_injection)).
+  - Validation: Enforce strict rules on allowed characters and data types.
+  - Filtering: Remove potentially malicious scripts or code fragments.
+  - Encoding: Convert special characters into safe representations.
+  - Verification: Run tooling that identifies potential script injections (e.g. [models that detect prompt injection attempts](https://python.langchain.com/docs/guides/safety/hugging_face_prompt_injection)).
 
 ### Data privacy
 
 **Take special security measures if you train your models with sensitive data**. Prioritize [sandboxing](https://developers.google.com/code-sandboxing) your models and:
+
 - Do not feed sensitive data to an untrusted model (even if runs in a sandboxed environment)
 - If you consider publishing a model that was partially trained with sensitive data, be aware that data can potentially be recovered from the trained weights (especially if the model overfits).
 
@@ -89,6 +95,7 @@ For performance reasons, none of the PyTorch Distributed primitives (including c
 Security fixes are only applied to the current release. Fixes are never backported to older versions of PyTorch. The only security concern applicable to previously published releases is tampering with the published binaries themselves (e.g., unauthorized modification of packages on PyPI or download indexes). If you believe a published binary has been compromised, please report it through the [security advisory process](#reporting-security-issues).
 
 ## CI/CD security principles
+
 _Audience_: Contributors and reviewers, especially if modifying the workflow files/build system.
 
 PyTorch CI/CD security philosophy is based on finding a balance between open and transparent CI pipelines while keeping the environment efficient and safe.
@@ -106,8 +113,9 @@ To improve runner availability and more efficient resource utilization, some of 
 ### Release pipelines security
 
 To ensure safe binary releases, PyTorch release pipelines are built on the following principles:
- - All binary builds/upload jobs must be run on ephemeral runners, i.e., on a machine that is allocated from the cloud to do the build and released back to the cloud after the build is finished. This protects those builds from interference from external actors, who potentially can get reverse shell access to a non-ephemeral runner and wait there for a binary build.
- - All binary builds are cold-start builds, i.e., distributed caching/incremental builds are not permitted. This renders builds much slower than incremental CI builds but isolates them from potential compromises of the intermediate artifacts caching systems.
- - All upload jobs are executed in a [deployment environments](https://docs.github.com/en/actions/deployment/targeting-different-environments/using-environments-for-deployment) that are restricted to protected branches
- - Security credentials needed to upload binaries to PyPI/conda or stable indexes `download.pytorch.org/whl` are never uploaded to repo secrets storage/environment. This requires an extra manual step to publish the release but ensures that access to those would not be compromised by deliberate/accidental leaks of secrets stored in the cloud.
- - No binary artifacts should be published to GitHub releases pages, as these are overwritable by anyone with write permission to the repo.
+
+- All binary builds/upload jobs must be run on ephemeral runners, i.e., on a machine that is allocated from the cloud to do the build and released back to the cloud after the build is finished. This protects those builds from interference from external actors, who potentially can get reverse shell access to a non-ephemeral runner and wait there for a binary build.
+- All binary builds are cold-start builds, i.e., distributed caching/incremental builds are not permitted. This renders builds much slower than incremental CI builds but isolates them from potential compromises of the intermediate artifacts caching systems.
+- All upload jobs are executed in a [deployment environments](https://docs.github.com/en/actions/deployment/targeting-different-environments/using-environments-for-deployment) that are restricted to protected branches
+- Security credentials needed to upload binaries to PyPI/conda or stable indexes `download.pytorch.org/whl` are never uploaded to repo secrets storage/environment. This requires an extra manual step to publish the release but ensures that access to those would not be compromised by deliberate/accidental leaks of secrets stored in the cloud.
+- No binary artifacts should be published to GitHub releases pages, as these are overwritable by anyone with write permission to the repo.

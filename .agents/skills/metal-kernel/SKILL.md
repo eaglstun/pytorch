@@ -285,8 +285,15 @@ When migrating from MPSGraph, also remove the old implementation:
 After making changes, compile to verify everything builds correctly:
 
 ```bash
-cd build && ninja torch_cpu
+.venv/bin/pip install -r requirements-build.txt
+USE_CUDA=0 USE_DISTRIBUTED=0 USE_MKLDNN=0 USE_OPENMP=0 \
+  BUILD_TEST=0 USE_FLASH_ATTENTION=0 \
+  .venv/bin/pip install -e . -v --no-build-isolation
 ```
+
+This repository requires the editable `pip` build path; do not invoke `ninja`
+directly. On the local Apple Silicon machine, `USE_OPENMP=0` avoids a dependency
+on an otherwise-uninstalled Homebrew `libomp`.
 
 ## Testing
 
@@ -328,10 +335,10 @@ OpInfo(
 
 ```bash
 # Run the specific operator test
-python test/test_mps.py -k test_output_match_my_op
+.venv/bin/python -m pytest test/test_mps.py -k test_output_match_my_op
 
 # Or run full MPS test suite
-python test/test_mps.py
+.venv/bin/python test/test_mps.py
 ```
 
 ## Debugging Metal Kernels with `torch.mps.compile_shader`
