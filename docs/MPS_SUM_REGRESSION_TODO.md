@@ -1,4 +1,4 @@
-# TODO: MPS `sum` regression on small reduced extents (torch 2.13)
+# Historical investigation: MPS `sum` regression on small reduced extents (torch 2.13)
 
 > **Upstream status (2026-08-31): superseded.** The merge from `upstream/main`
 > includes the newer five-part Faster MPS reductions series (#191097–#191101),
@@ -37,8 +37,10 @@ broken (that was §8 below, now resolved by `3102913a757`). **§8 is kept for th
 it is history, not an open bug.** The lesson in it still stands: a reduction is pathological
 at _both_ ends, so sweep the **output** size as well as the reduced extent.
 
-**Still to do:** the upstream issue is drafted (`agent_space/mps_sum_issue_body.md`) but
-**not filed**, and no PR is open. Everything is on branch `mps-sum-small-reduced-extent`.
+**Historical disposition:** the upstream issue draft in
+`agent_space/mps_sum_issue_body.md` was never filed because the newer upstream
+reduction series superseded it. The local implementation remains on the
+`mps-sum-small-reduced-extent` branch for comparison.
 
 **Written:** 2026-07-13, from an investigation done in a different repo (`~/Documents/dev/pulse`).
 **Audience:** a fresh agent. Everything you need is in this file; you do not need that other repo.

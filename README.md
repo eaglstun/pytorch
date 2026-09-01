@@ -14,16 +14,15 @@ This is [Eric Eaglstun's](https://github.com/eaglstun) fork of
 intended for upstream. It is not a distribution of PyTorch — build from source or
 use the official wheels.
 
-**Current work: MPS reduction-kernel performance.** torch 2.13's native Metal
-reduction kernels (`sum` / `nansum` / `mean`) regressed badly at both extremes of
-reduction geometry — tiny reduced extents (up to 36x slower; the backward of any
-`expand`/broadcast) and tiny outputs (7.5x slower; per-channel parameter
-gradients). This fork carries the fix: thread-per-output kernels for small
-extents and a generalized two-pass split for small outputs, with dispatch
-unchanged in the regimes where the 2.13 kernels win. Landed on this fork's
-`main` via [#1](https://github.com/eaglstun/pytorch/pull/1); the analysis lives
-in `MPS_SUM_REGRESSION_TODO.md` (local, untracked) and an upstream issue + PR
-are in progress.
+**MPS reduction-kernel work.** This fork investigated torch 2.13 regressions in
+the native Metal `sum` / `nansum` / `mean` kernels at both extremes of reduction
+geometry. The local fix landed via
+[#1](https://github.com/eaglstun/pytorch/pull/1), and has since been superseded by
+upstream's five-part Faster MPS reductions series (#191097-#191101). The merged
+kernels and full MPS suite are green. The original measurements, root-cause
+analysis, and acceptance criteria are preserved in
+[`docs/MPS_SUM_REGRESSION_TODO.md`](docs/MPS_SUM_REGRESSION_TODO.md) as historical
+engineering documentation.
 
 Fork conventions: `main` tracks upstream plus landed fixes (synced by merging
 `upstream/main`); development happens on feature branches PR'd against this
