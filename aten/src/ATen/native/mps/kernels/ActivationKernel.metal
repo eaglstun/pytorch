@@ -45,6 +45,30 @@ REGISTER_BINARY_ALPHA_OP(shrink_backward, float, float, float);
 REGISTER_BINARY_ALPHA_OP(shrink_backward, half, half, half);
 REGISTER_BINARY_ALPHA_OP(shrink_backward, bfloat, bfloat, bfloat);
 
+struct threshold_functor {
+  template <typename T>
+  inline T operator()(
+      const T self,
+      const T other,
+      const ThresholdParams<T> params) {
+    return self <= params.threshold ? params.value : other;
+  }
+};
+
+#define REGISTER_THRESHOLD_OP(T)                  \
+  typedef ThresholdParams<T> ThresholdParams_##T; \
+  REGISTER_BINARY_ALPHA_OP(threshold, T, ThresholdParams_##T, T);
+
+REGISTER_THRESHOLD_OP(float);
+REGISTER_THRESHOLD_OP(half);
+REGISTER_THRESHOLD_OP(bfloat);
+REGISTER_THRESHOLD_OP(long);
+REGISTER_THRESHOLD_OP(int);
+REGISTER_THRESHOLD_OP(short);
+REGISTER_THRESHOLD_OP(char);
+REGISTER_THRESHOLD_OP(uchar);
+REGISTER_THRESHOLD_OP(bool);
+
 struct relu_functor {
   template <typename T>
   inline T operator()(const T x) {

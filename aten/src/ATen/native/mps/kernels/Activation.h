@@ -14,3 +14,9 @@ struct ELUBackwardParams {
   T input_scale;
   bool is_result;
 };
+
+template <typename T>
+struct ThresholdParams {
+  T threshold;
+  T value;
+};
