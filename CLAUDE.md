@@ -51,6 +51,19 @@ Always check local memory for build configuration (env vars, incremental-build s
 All build (both codegen, C++ and python) is done via `pip install -e . -v --no-build-isolation`.
 You should NEVER run any other command to build PyTorch.
 
+For the local Apple Silicon MPS-only checkout, the verified setup and build are:
+
+```bash
+.venv/bin/pip install -r requirements-build.txt
+USE_CUDA=0 USE_DISTRIBUTED=0 USE_MKLDNN=0 USE_OPENMP=0 \
+  BUILD_TEST=0 USE_FLASH_ATTENTION=0 \
+  .venv/bin/pip install -e . -v --no-build-isolation
+```
+
+`USE_OPENMP=0` is required on this machine unless Homebrew `libomp` is installed;
+without it, configuration looks for `/opt/homebrew/opt/libomp/lib/libomp.dylib`.
+This recipe was verified on 2026-08-31 with MPS built and available.
+
 # Testing
 
 Use our test class and test runner:

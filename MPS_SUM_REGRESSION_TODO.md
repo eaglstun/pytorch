@@ -1,5 +1,20 @@
 # TODO: MPS `sum` regression on small reduced extents (torch 2.13)
 
+> **Upstream status (2026-08-31): superseded.** The merge from `upstream/main`
+> includes the newer five-part Faster MPS reductions series (#191097–#191101),
+> which replaces the local `3102913a757` implementation described below. The
+> merged kernels build successfully and the reduction-focused `test/test_mps.py`
+> selections pass: 552 passed, 4 skipped, and 6 expected xfails. Keep the rest of
+> this document as historical regression analysis, not as an implementation plan.
+>
+> The full MPS suite also ran 10,458 tests. Its initial 88 JIT-conformance errors
+> were caused by stale headers in the editable checkout's generated
+> `torch/include` mirror; after refreshing that mirror, all 88 pass. An allocator
+> state assertion also passes in isolation. One unrelated error remains
+> reproducible in
+> `TestConsistencyMPS.test_output_grad_match_combinations_mps_float16`: relative
+> error `0.0013418` exceeds the current `0.001` tolerance for sample input 11.
+
 ## ✅ FIXED AND VERIFIED — `3102913a757`, "Fix sum/nansum/mean perf regression at both reduction extremes"
 
 **Status (final, 2026-07-13):** both failure modes are fixed and independently re-verified
