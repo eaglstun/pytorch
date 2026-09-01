@@ -14,6 +14,13 @@ This is [Eric Eaglstun's](https://github.com/eaglstun) fork of
 intended for upstream. It is not a distribution of PyTorch — build from source or
 use the official wheels.
 
+**AI-first engineering.** Nearly all improvements unique to this fork are
+designed, implemented, tested, and documented by AI agents working under the
+direction of the human maintainer. This is the fork's intended development
+model. Upstream PyTorch's contribution restrictions apply when sending work
+upstream, not to development within this fork. See [`AI_POLICY.md`](AI_POLICY.md)
+for the full distinction.
+
 **MPS reduction-kernel work.** This fork investigated torch 2.13 regressions in
 the native Metal `sum` / `nansum` / `mean` kernels at both extremes of reduction
 geometry. The local fix landed via
@@ -27,7 +34,8 @@ engineering documentation.
 Fork conventions: `main` tracks upstream plus landed fixes (synced by merging
 `upstream/main`); development happens on feature branches PR'd against this
 fork's `main`; nothing is ever pushed to upstream directly. Contributor-facing
-build/test/lint conventions are in `CLAUDE.md` / `AGENTS.md` at the repo root.
+build/test/lint conventions are in [`AGENTS.md`](AGENTS.md) at the repo root;
+`CLAUDE.md` points there as well.
 
 The original upstream README follows.
 

@@ -6,6 +6,12 @@ that walks through the process of contributing a change to PyTorch.
 The rest of this document (CONTRIBUTING.md) covers some of the more technical
 aspects of contributing to PyTorch.
 
+> **Fork note:** This fork uses an AI-first engineering model, and nearly all
+> fork-specific improvements are executed by AI agents under the direction of
+> the human maintainer. Fully AI-generated development work is accepted here.
+> Contributions intended for upstream PyTorch remain subject to upstream's
+> rules. See [AI_POLICY.md](AI_POLICY.md) for the full distinction.
+
 # Table of Contents
 
 <!-- toc -->
@@ -303,7 +309,14 @@ dependencies as well as the nightly binaries into the repo directory.
 
 ## AI-Assisted Development
 
-Please see PyTorch's detailed [AI Policy here](AI_POLICY.md).
+AI-assisted development is the normal development model for this fork. AI
+agents may design, implement, test, and document fork-specific improvements
+within the scope authorized by the maintainer. AI involvement must be
+represented accurately.
+
+The reminders below describe upstream PyTorch's contribution requirements and
+apply when sending work upstream. See the detailed [AI policy](AI_POLICY.md) for
+the distinction between this fork and upstream.
 
 All the details on how to contribute (with or without AI assistance) are in the [Ultimate Guide to PyTorch Contributions](https://github.com/pytorch/pytorch/wiki/The-Ultimate-Guide-to-PyTorch-Contributions).
 A couple reminders here though:
