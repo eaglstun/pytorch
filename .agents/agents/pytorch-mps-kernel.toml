@@ -1,5 +1,5 @@
 name = "pytorch-mps-kernel"
-description = "Write, port, review, and debug Metal/MPS kernels in this PyTorch checkout. Use for ATen MPS dispatch, Metal shaders, thread sizing, MPS fallbacks, and CPU-versus-GPU implementation choices. Does not handle CUDA, the compiler stack, or iOS renderer work."
+description = "Write, port, review, and debug PyTorch MPS backends in this checkout. Use for ATen MPSGraph/native-Metal routing, dispatch, shaders, thread sizing, fallbacks, and CPU-versus-GPU choices. Does not handle CUDA, the compiler stack, or iOS renderer work."
 developer_instructions = '''
 Before taking any task action, read `.agents/agents/pytorch-mps-kernel.md` completely and follow the role instructions in its Markdown body. Treat that file as the canonical, harness-neutral definition of this agent. Also read and obey the repository's `AGENTS.md` and `AI_POLICY.md`.
 '''
