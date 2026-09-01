@@ -22,6 +22,7 @@
 #include <ATen/ops/sigmoid.h>
 #include <ATen/ops/sigmoid_backward_native.h>
 #include <ATen/ops/sigmoid_native.h>
+#include <ATen/ops/threshold_native.h>
 #endif
 #include <ATen/native/BinaryOps.h>
 #include <ATen/native/Gelu.h>
@@ -159,6 +160,15 @@ static void gelu_backward_kernel(TensorIteratorBase& iter, GeluType approximate)
 
 static void sigmoid_backward_kernel(TensorIteratorBase& iter) {
   lib.exec_binary_kernel(iter, "sigmoid_backward");
+}
+
+static void threshold_kernel(TensorIteratorBase& iter, const Scalar& threshold, const Scalar& value) {
+  const auto dtype = iter.common_dtype();
+  AT_DISPATCH_ALL_TYPES_AND3(c10::kBool, c10::kBFloat16, c10::kHalf, dtype, "threshold_mps", [&]() {
+    ThresholdParams<scalar_t> params{threshold.to<scalar_t>(), value.to<scalar_t>()};
+    lib.exec_binary_kernel_with_params(
+        iter, "threshold", params, fmt::format("ThresholdParams_{}", mps::scalarToMetalTypeString(dtype)));
+  });
 }
 
 // Collapse a tensor around the split dim into [outer, 2*L], where
@@ -359,5 +369,6 @@ REGISTER_DISPATCH(mish_backward_stub, mish_backward_kernel);
 REGISTER_DISPATCH(GeluKernel, gelu_kernel);
 REGISTER_DISPATCH(GeluBackwardKernel, gelu_backward_kernel);
 REGISTER_DISPATCH(sigmoid_backward_stub, sigmoid_backward_kernel);
+REGISTER_DISPATCH(threshold_stub, threshold_kernel);
 
 } // namespace at::native

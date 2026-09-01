@@ -1,4 +1,19 @@
-# TODO: MPS `sum` regression on small reduced extents (torch 2.13)
+# Historical investigation: MPS `sum` regression on small reduced extents (torch 2.13)
+
+> **Upstream status (2026-08-31): superseded.** The merge from `upstream/main`
+> includes the newer five-part Faster MPS reductions series (#191097–#191101),
+> which replaces the local `3102913a757` implementation described below. The
+> merged kernels build successfully and the reduction-focused `test/test_mps.py`
+> selections pass: 552 passed, 4 skipped, and 6 expected xfails. Keep the rest of
+> this document as historical regression analysis, not as an implementation plan.
+>
+> The full MPS suite is also green: 10,458 tests ran in 440.555 seconds, with
+> 770 skips and 475 expected failures. The initial 88 JIT-conformance errors came
+> from stale headers in the editable checkout's generated `torch/include` mirror
+> and disappeared after refreshing it. Two test-harness assumptions were fixed:
+> fp16 `combinations` backward now allows the measured few-ULP accumulation-order
+> drift, and the allocator test measures growth from its cleaned baseline rather
+> than requiring unrelated process-global allocations to be zero.
 
 > **Upstream status (2026-08-31): superseded.** The merge from `upstream/main`
 > includes the newer five-part Faster MPS reductions series (#191097–#191101),
@@ -37,8 +52,10 @@ broken (that was §8 below, now resolved by `3102913a757`). **§8 is kept for th
 it is history, not an open bug.** The lesson in it still stands: a reduction is pathological
 at _both_ ends, so sweep the **output** size as well as the reduced extent.
 
-**Still to do:** the upstream issue is drafted (`agent_space/mps_sum_issue_body.md`) but
-**not filed**, and no PR is open. Everything is on branch `mps-sum-small-reduced-extent`.
+**Historical disposition:** the upstream issue draft in
+`agent_space/mps_sum_issue_body.md` was never filed because the newer upstream
+reduction series superseded it. The local implementation remains on the
+`mps-sum-small-reduced-extent` branch for comparison.
 
 **Written:** 2026-07-13, from an investigation done in a different repo (`~/Documents/dev/pulse`).
 **Audience:** a fresh agent. Everything you need is in this file; you do not need that other repo.
