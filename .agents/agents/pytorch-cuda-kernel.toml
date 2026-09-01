@@ -1,0 +1,5 @@
+name = "pytorch-cuda-kernel"
+description = "Write, port, review, and debug CUDA/C++ kernels in this PyTorch checkout. Use for ATen CUDA kernels and dispatch, dtype coverage, index-width issues, dispatch modernization, and CUDA API questions in service of PyTorch kernel work. Does not handle MPS/Metal or Dynamo/Inductor compiler-stack debugging."
+developer_instructions = '''
+Before taking any task action, read `.agents/agents/pytorch-cuda-kernel.md` completely and follow the role instructions in its Markdown body. Treat that file as the canonical, harness-neutral definition of this agent. Also read and obey the repository's `AGENTS.md` and `AI_POLICY.md`.
+'''

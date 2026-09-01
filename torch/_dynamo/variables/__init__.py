@@ -63,6 +63,7 @@ from .dicts import (
     DunderDictVariable,
     MappingProxyVariable,
     NNModuleHooksDictVariable,
+    OrderedDictVariable,
 )
 from .distributed import BackwardHookVariable, DistributedVariable
 from .functions import (
@@ -120,6 +121,7 @@ from .iter import (
 from .lazy import LazyConstantVariable, LazyVariableTracker
 from .lists import (
     BaseListVariable,
+    DequeIteratorVariable,
     DequeVariable,
     ListIteratorVariable,
     ListVariable,
@@ -128,7 +130,9 @@ from .lists import (
     TupleIteratorVariable,
     TupleVariable,
 )
+from .memory import CUDAMemPoolContextVariable, CUDAMemPoolVariable
 from .misc import (
+    AttributeErrorVariable,
     AutogradFunctionContextVariable,
     AutogradFunctionVariable,
     CallMethodVariable,
@@ -138,12 +142,14 @@ from .misc import (
     ExceptionVariable,
     GetAttrVariable,
     LambdaVariable,
+    NameErrorVariable,
     NewGlobalVariable,
     NumpyVariable,
     ObjectVariable,
     PythonModuleVariable,
     RandomClassVariable,
     RandomVariable,
+    StopIterationVariable,
     StringFormatVariable,
     SuperVariable,
     TracebackVariable,
@@ -188,8 +194,8 @@ from .user_defined import (
     InspectVariable,
     MutableMappingVariable,
     NamedTupleVariable,
-    OrderedDictVariable,
     RemovableHandleVariable,
+    SimpleNamespaceVariable,
     StructSequenceVariable,
     UserDefinedClassVariable,
     UserDefinedConstantVariable,
@@ -207,6 +213,7 @@ from .user_defined import (
 
 __all__ = [
     "AcceleratorDeviceIndexVariable",
+    "AttributeErrorVariable",
     "AutogradFunctionContextVariable",
     "AutogradFunctionVariable",
     "BackwardHookVariable",
@@ -225,6 +232,8 @@ __all__ = [
     "CreateTMADescriptorExperimentalVariable",
     "CreateTMADescriptorStableVariable",
     "CUDADeviceVariable",
+    "CUDAMemPoolContextVariable",
+    "CUDAMemPoolVariable",
     "CudagraphOverrideVariable",
     "DataPtrVariable",
     "DefaultDictVariable",
@@ -251,6 +260,7 @@ __all__ = [
     "ListIteratorVariable",
     "ListVariable",
     "MappingProxyVariable",
+    "NameErrorVariable",
     "NamedTupleVariable",
     "NestedUserFunctionVariable",
     "NewGlobalVariable",
@@ -267,8 +277,10 @@ __all__ = [
     "RepeatIteratorVariable",
     "SDPAParamsVariable",
     "SetAttrBuiltinVariable",
+    "SimpleNamespaceVariable",
     "SkipFunctionVariable",
     "SliceVariable",
+    "StopIterationVariable",
     "StringFormatVariable",
     "StructSequenceVariable",
     "SuperVariable",
