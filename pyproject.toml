@@ -313,7 +313,7 @@ dev = [
     # [build-system] section
     "scikit-build-core>=1.0",
     "setuptools>=77.0.0,<82",  # 77.0 is the first release with PEP 639 license-files support
-    "spin",
+    "spin>=0.18",
     "cmake>=3.27",
     "ninja",
     "numpy",
@@ -336,7 +336,7 @@ dev = [
     "networkx>=2.5.1",
     "optree>=0.13.0",
     "psutil",
-    "spin",
+    "spin>=0.18",
     "sympy>=1.13.3",
     "wheel"
 ]
